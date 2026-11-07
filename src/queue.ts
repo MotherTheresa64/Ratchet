@@ -222,7 +222,7 @@ export class Queue {
     return this.tx(() => {
       const row = this.db
         .prepare(`SELECT * FROM jobs WHERE id = ? AND state = 'leased' AND lease_owner = ?`)
-        .get(id, workerId) as JobRow | undefined;
+        .get(id, workerId) as unknown as JobRow | undefined;
       if (!row) return false;
 
       const exhausted = row.attempts >= row.max_attempts;
@@ -275,14 +275,14 @@ export class Queue {
   }
 
   get(id: string): Job | null {
-    const row = this.db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id) as JobRow | undefined;
+    const row = this.db.prepare(`SELECT * FROM jobs WHERE id = ?`).get(id) as unknown as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
   findByIdempotencyKey(kind: string, key: string): Job | null {
     const row = this.db
       .prepare(`SELECT * FROM jobs WHERE kind = ? AND idempotency_key = ?`)
-      .get(kind, key) as JobRow | undefined;
+      .get(kind, key) as unknown as JobRow | undefined;
     return row ? toJob(row) : null;
   }
 
