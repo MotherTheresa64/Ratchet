@@ -1,0 +1,13 @@
+{
+  "name": "@noah/ratchet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Durable job queue with leases, exactly-once claiming, exponential backoff and a dead-letter state.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/demo.ts"
+  },
+  "license": "MIT"
+}
