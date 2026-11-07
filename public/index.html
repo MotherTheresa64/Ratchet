@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:," />
+<title>Ratchet — job queue</title>
+<style>
+  :root{--ink:#14181d;--muted:#5b6670;--line:#e2e6ea;--bg:#f6f7f9;--card:#fff;--ok:#177245;--bad:#b3261e;--warn:#8a5a00}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  h1{margin:0;font-size:16px;letter-spacing:-.01em}
+  h1 span{display:block;font-size:12.5px;font-weight:400;color:var(--muted)}
+  main{max-width:1000px;margin:0 auto;padding:18px 20px 40px;display:grid;gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+  label{display:block;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 6px}
+  input,select{padding:9px 11px;font:14px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;border:1px solid var(--line);border-radius:8px;background:#fff;color:inherit;width:100%}
+  button{font:inherit;font-weight:600;padding:8px 13px;border-radius:8px;border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;white-space:nowrap}
+  button.secondary{background:#fff;color:var(--ink);border-color:var(--line)}
+  .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:12px}
+  .row > div{flex:1;min-width:120px}
+  .stats{display:flex;gap:8px;flex-wrap:wrap}
+  .stat{font:12.5px/1.4 ui-monospace,monospace;font-weight:700;padding:5px 10px;border-radius:6px;background:#eef1f4;color:var(--muted)}
+  .stat.pending{background:#fdf8ec;color:var(--warn)}
+  .stat.leased{background:#eef4ff;color:#1f3fa8}
+  .stat.done{background:#f2faf5;color:var(--ok)}
+  .stat.dead{background:#fdf4f3;color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:0 8px 6px 0;border-bottom:1px solid var(--line)}
+  td{padding:7px 8px 7px 0;border-bottom:1px solid #f1f3f5}
+  td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  .badge{font-size:11.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:#eef1f4;color:var(--muted)}
+  .badge.pending{background:#fdf8ec;color:var(--warn)}
+  .badge.leased{background:#eef4ff;color:#1f3fa8}
+  .badge.done{background:#f2faf5;color:var(--ok)}
+  .badge.dead{background:#fdf4f3;color:var(--bad)}
+  .note{margin:12px 0 0;font-size:13px;padding:9px 11px;border-radius:8px}
+  .note.ok{background:#f2faf5;color:var(--ok)}
+  .note.bad{background:#fdf4f3;color:var(--bad)}
+  .hint{color:var(--muted);font-size:12.5px;margin:10px 0 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ratchet<span>leased jobs, bounded retries and a dead letter</span></h1>
+  <div id="stats" class="stats"></div>
+</header>
+<main>
+  <section class="card">
+    <label>Enqueue a job</label>
+    <div class="row">
+      <div><label for="kind">Kind</label><input id="kind" type="text" value="send-email" /></div>
+      <div><label for="payload">Payload</label><input id="payload" type="text" value='{"to":"noah@example.com"}' /></div>
+      <div><label for="maxAttempts">Max attempts</label><input id="maxAttempts" type="text" value="3" /></div>
+    </div>
+    <div class="row">
+      <button id="enqueue" type="button">Enqueue</button>
+      <p class="hint" style="margin:0">Same kind plus the same payload is still a separate job — only an explicit idempotency key dedupes.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <label>Worker</label>
+    <div class="row">
+      <div><label for="workerId">Worker id</label><input id="workerId" type="text" value="worker-1" /></div>
+      <div><label for="advance">Skip ahead (ms)</label><input id="advance" type="text" value="0" /></div>
+      <button id="succeed" type="button">Run one job</button>
+      <button id="fail" class="secondary" type="button">Run one job that fails</button>
+      <button id="recover" class="secondary" type="button">Recover expired leases</button>
+    </div>
+    <p id="note" class="note" hidden></p>
+    <p class="hint">A failed job is rescheduled with exponential backoff; skip ahead past the delay to run it again. A job that runs out of attempts is buried instead of retried forever.</p>
+  </section>
+
+  <section class="card">
+    <label>Jobs</label>
+    <table>
+      <thead><tr><th>Kind</th><th>State</th><th>Attempts</th><th>Run at</th><th>Last error</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+</main>
+<script>
+  const $ = (selector) => document.querySelector(selector);
+  const clock = (ms) => new Date(ms).toLocaleTimeString();
+
+  function note(text, kind) {
+    const node = $("#note");
+    node.textContent = text;
+    node.className = "note " + kind;
+    node.hidden = false;
+  }
+
+  async function postJson(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function refresh() {
+    const data = await (await fetch("/jobs")).json();
+    const stats = $("#stats");
+    stats.replaceChildren();
+    for (const state of ["pending", "leased", "done", "dead"]) {
+      const node = document.createElement("span");
+      node.className = "stat " + state;
+      node.textContent = `${state} ${data.stats[state]}`;
+      stats.append(node);
+    }
+
+    const body = $("#jobs");
+    body.replaceChildren();
+    for (const job of data.jobs.slice().reverse()) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="mono">${job.kind}</td>
+        <td><span class="badge ${job.state}">${job.state}</span></td>
+        <td class="mono">${job.attempts}/${job.maxAttempts}</td>
+        <td class="mono">${clock(job.runAt)}</td>
+        <td class="mono">${job.lastError ?? ""}</td>`;
+      body.append(tr);
+    }
+  }
+
+  $("#enqueue").addEventListener("click", async () => {
+    let payload = null;
+    try {
+      payload = JSON.parse($("#payload").value || "null");
+    } catch {
+      note("Payload is not valid JSON.", "bad");
+      return;
+    }
+    const res = await postJson("/jobs", {
+      kind: $("#kind").value,
+      payload,
+      maxAttempts: Number($("#maxAttempts").value),
+    });
+    const data = await res.json();
+    if (!res.ok) { note(data.message ?? "Rejected.", "bad"); return; }
+    note(`Queued ${data.job.kind} (${data.job.id.slice(0, 8)}).`, "ok");
+    await refresh();
+  });
+
+  async function run(outcome) {
+    const res = await postJson("/run", {
+      workerId: $("#workerId").value,
+      outcome,
+      advanceMs: Number($("#advance").value) || 0,
+    });
+    const data = await res.json();
+    if (!data.job) { note(data.message ?? "Nothing due.", "bad"); return; }
+    const job = data.job;
+    note(
+      outcome === "fail"
+        ? `${job.kind} failed on attempt ${job.attempts}/${job.maxAttempts}; it is now ${job.state}.`
+        : `${job.kind} finished after ${job.attempts} attempt(s).`,
+      outcome === "fail" ? "bad" : "ok",
+    );
+    await refresh();
+  }
+
+  $("#succeed").addEventListener("click", () => run("succeed"));
+  $("#fail").addEventListener("click", () => run("fail"));
+  $("#recover").addEventListener("click", async () => {
+    const res = await postJson("/recover", { advanceMs: Number($("#advance").value) || 0 });
+    const data = await res.json();
+    note(`${data.recovered} expired lease(s) returned to the pool.`, data.recovered ? "ok" : "bad");
+    await refresh();
+  });
+
+  refresh();
+</script>
+</body>
+</html>
