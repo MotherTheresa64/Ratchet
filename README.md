@@ -19,7 +19,7 @@ already failed four times. Ratchet models those cases explicitly.
 Requires Node 24+ (developed on Node 26). Nothing to install.
 
 ```bash
-node --test          # 16 tests
+node --test          # 22 tests
 ```
 
 ## Model
@@ -68,7 +68,7 @@ count intact, so a flapping worker cannot retry forever by dying at the right mo
 
 ## Tests
 
-16 tests covering: claim exclusivity, payload round-trip, ack/fail ownership, backoff math
+22 tests covering: claim exclusivity, payload round-trip, ack/fail ownership, backoff math
 and its ceiling, `run_at` visibility, FIFO ordering by due time, attempt exhaustion into
 the dead-letter state, lease reclamation by a second worker, a stale worker being refused
 after its lease was taken, burial on expiry with no attempts left, lease renewal, idempotent
